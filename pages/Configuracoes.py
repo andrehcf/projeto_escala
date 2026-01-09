@@ -15,7 +15,7 @@ def get_db_connection():
 
 # --- Funcao: Carregar Regras ---
 def carregar_regras_atualizadas():
-    database.init_all_db_tables() # Garante que tabelas existam
+    database.init_all_db_tables()
     conn = get_db_connection()
     regras = {}
     padrao = {
@@ -36,18 +36,16 @@ def carregar_regras_atualizadas():
                     if turno not in regras[dia]: regras[dia][turno] = qtd
         return regras
     except Exception as e:
-        # st.error(f"Erro debug regras: {e}")
         return padrao
     finally:
         conn.close()
 
-# --- Funcoes de Salvamento (COM ALERTAS E COMPATIBILIDADE NUVEM) ---
+# --- Funcoes de Salvamento ---
 def save_staff_rules(regras):
     conn = database.get_db_connection()
     try:
         for dia, turnos in regras.items():
             for turno, qtd in turnos.items():
-                # CORREÇÃO: Usando database.run_query para trocar ? por %s automaticamente
                 database.run_query(conn, """
                     INSERT INTO regras_staff (dia_tipo, turno, quantidade)
                     VALUES (?, ?, ?) 
@@ -55,7 +53,6 @@ def save_staff_rules(regras):
                     DO UPDATE SET quantidade = excluded.quantidade
                 """, (dia, turno, qtd))
         conn.commit()
-        
         st.toast("Regras de Staff salvas com sucesso!", icon="✅")
         time.sleep(0.5) 
         st.cache_data.clear()
@@ -70,13 +67,11 @@ def save_shift_hours(horas):
     conn = database.get_db_connection()
     try:
         for turno, qtd in horas.items():
-            # CORREÇÃO: Usando database.run_query
             database.run_query(conn, """
                 INSERT INTO configuracao_turnos (turno, horas) VALUES (?, ?) 
                 ON CONFLICT(turno) DO UPDATE SET horas = excluded.horas
             """, (turno, qtd))
         conn.commit()
-        
         st.toast("Carga horária atualizada!", icon="⏰")
         time.sleep(0.5)
         st.cache_data.clear()
@@ -90,13 +85,11 @@ def save_shift_hours(horas):
 def save_limits(limite):
     conn = database.get_db_connection()
     try:
-        # CORREÇÃO: Usando database.run_query
         database.run_query(conn, """
             INSERT INTO configuracao_limites (chave, valor) VALUES ('max_horas_ciclo', ?) 
             ON CONFLICT(chave) DO UPDATE SET valor = excluded.valor
         """, (limite,))
         conn.commit()
-        
         st.toast(f"Limite de horas salvo: {limite}h", icon="🛡️")
         time.sleep(0.5)
         st.cache_data.clear()
@@ -110,14 +103,33 @@ def save_limits(limite):
 def delete_all_data():
     conn = database.get_db_connection()
     try:
-        tables = ["indisponibilidades", "escala_salva", "ciclo_dias", "sobreaviso", "regras_staff",
-                  "configuracao_turnos", "configuracao_limites", "analistas", "ciclos", "sqlite_sequence",
-                  "feriados_anuais"]
+        # Ordem importante para não quebrar Constraints (Foreign Keys)
+        # Apagamos primeiro quem depende (filhos), depois os pais
+        tables = [
+            "indisponibilidades", 
+            "escala_salva", 
+            "ciclo_dias", 
+            "sobreaviso", 
+            "regras_staff",
+            "configuracao_turnos", 
+            "configuracao_limites", 
+            "analistas", 
+            "ciclos", 
+            "feriados_anuais"
+        ]
+        
+        # CORREÇÃO CRÍTICA: Não tentar apagar sqlite_sequence no Postgres
+        # Se tentar, a transação aborta e nada é apagado.
+        is_postgres = "POSTGRES_URL" in st.secrets
+        if not is_postgres:
+            tables.append("sqlite_sequence")
+
         for t in tables: 
             try:
-                # CORREÇÃO: Usando database.run_query
                 database.run_query(conn, f"DELETE FROM {t}")
-            except: pass # Ignora erro se tabela nao existir
+            except Exception as e:
+                # Se der erro, printa no log do servidor mas segue o baile
+                print(f"Aviso ao limpar {t}: {e}")
             
         conn.commit()
         st.balloons() 
@@ -125,7 +137,10 @@ def delete_all_data():
         st.cache_data.clear()
         time.sleep(2)
     except Exception as e:
-        st.error(f"Erro: {e}")
+        st.error(f"Erro crítico ao resetar: {e}")
+        # Tenta rollback se der erro grave
+        try: conn.rollback()
+        except: pass
     finally:
         conn.close()
 
@@ -231,7 +246,6 @@ with st.expander("🛠️ Gerar Feriados Automaticamente", expanded=False):
             count_new = 0
             for date, name in br_holidays.items():
                 try:
-                    # CORREÇÃO: run_query
                     database.run_query(conn, 
                         "INSERT INTO feriados_anuais (data_iso, nome_feriado, usar_na_escala) VALUES (?, ?, TRUE) ON CONFLICT(data_iso) DO NOTHING",
                         (date.strftime('%Y-%m-%d'), name))
@@ -273,7 +287,6 @@ try:
             conn_save = database.get_db_connection()
             try:
                 for i, row in df_editado.iterrows():
-                    # CORREÇÃO: run_query + bool()
                     database.run_query(conn_save, 
                         "UPDATE feriados_anuais SET nome_feriado = ?, usar_na_escala = ? WHERE id = ?",
                         (row['nome_feriado'], bool(row['usar_na_escala']), row['id']))
@@ -311,7 +324,6 @@ try:
                 conn_save = database.get_db_connection()
                 try:
                     for i, row in df_editado_ciclo.iterrows():
-                        # CORREÇÃO: run_query + bool()
                         database.run_query(conn_save, 
                             "UPDATE ciclo_dias SET nome_coluna = ?, ativo = ? WHERE id = ?", 
                             (row['nome_coluna'], bool(row['ativo']), row['id']))
