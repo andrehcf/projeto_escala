@@ -3,7 +3,7 @@ import streamlit as st
 import os
 from datetime import datetime
 
-# Tenta importar psycopg2 para PostgreSQL (só funciona se instalado)
+# Tenta importar psycopg2 para PostgreSQL (só funciona se instalado via requirements.txt)
 try:
     import psycopg2
     from psycopg2.extras import RealDictCursor
@@ -31,12 +31,19 @@ def run_query(conn, sql, params=()):
     """
     is_postgres = "POSTGRES_URL" in st.secrets
     
-    # 1. Ajusta o placeholder (? -> %s para Postgres)
+    # 1. Ajusta o SQL para o dialeto correto
     if is_postgres:
+        # Troca placeholder
         sql = sql.replace('?', '%s')
-        # Postgres usa SERIAL em vez de AUTOINCREMENT, ajustamos na criação de tabela
+        
+        # Ajustes de Tipagem do Postgres
         sql = sql.replace('INTEGER PRIMARY KEY AUTOINCREMENT', 'SERIAL PRIMARY KEY')
-        sql = sql.replace('DATETIME DEFAULT CURRENT_TIMESTAMP', 'TIMESTAMP DEFAULT NOW()')
+        
+        # CORREÇÃO DO ERRO: Troca DATETIME por TIMESTAMP globalmente
+        sql = sql.replace('DATETIME', 'TIMESTAMP') 
+        
+        # Ajuste opcional para data atual
+        sql = sql.replace('DEFAULT CURRENT_TIMESTAMP', 'DEFAULT NOW()')
     
     # 2. Executa
     try:
@@ -48,6 +55,8 @@ def run_query(conn, sql, params=()):
         cursor.execute(sql, params)
         return cursor
     except Exception as e:
+        # Loga o erro para facilitar debug no Streamlit Cloud
+        print(f"Erro ao executar SQL: {sql}") 
         raise e
 
 def init_all_db_tables():
@@ -97,7 +106,7 @@ def init_all_db_tables():
             );
         ''')
         
-        # Escala Salva
+        # Escala Salva (O ERRO ESTAVA AQUI, no DATETIME)
         run_query(conn, 'CREATE TABLE IF NOT EXISTS escala_salva (id INTEGER PRIMARY KEY AUTOINCREMENT, id_ciclo INTEGER, nome_analista TEXT, nome_coluna_dia TEXT, turno TEXT, data_salvamento DATETIME, UNIQUE(id_ciclo, nome_analista, nome_coluna_dia));')
         
         # Sobreaviso
