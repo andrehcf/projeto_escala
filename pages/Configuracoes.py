@@ -1,23 +1,21 @@
 import streamlit as st
-import sqlite3
 import pandas as pd
 import database
 import utils
 import holidays
-import time  # Importante para dar tempo de ler a mensagem antes do rerun
+import time 
 from datetime import time as dt_time, datetime
 
 st.set_page_config(page_title="Configurações", page_icon="⚙️")
 st.title("Configurações do Sistema")
 
-
 # --- Funcoes de Banco de Dados ---
 def get_db_connection():
     return database.get_db_connection()
 
-
 # --- Funcao: Carregar Regras ---
 def carregar_regras_atualizadas():
+    database.init_all_db_tables() # Garante que tabelas existam
     conn = get_db_connection()
     regras = {}
     padrao = {
@@ -32,36 +30,34 @@ def carregar_regras_atualizadas():
             if row['dia_tipo'] not in regras: regras[row['dia_tipo']] = {}
             regras[row['dia_tipo']][row['turno']] = row['quantidade']
         for dia, turnos in padrao.items():
-            if dia not in regras:
-                regras[dia] = turnos
+            if dia not in regras: regras[dia] = turnos
             else:
                 for turno, qtd in turnos.items():
                     if turno not in regras[dia]: regras[dia][turno] = qtd
         return regras
-    except:
+    except Exception as e:
+        # st.error(f"Erro debug regras: {e}")
         return padrao
     finally:
         conn.close()
 
-
-# --- Funcoes de Salvamento (COM ALERTAS) ---
+# --- Funcoes de Salvamento (COM ALERTAS E COMPATIBILIDADE NUVEM) ---
 def save_staff_rules(regras):
     conn = database.get_db_connection()
     try:
-        cursor = conn.cursor()
         for dia, turnos in regras.items():
             for turno, qtd in turnos.items():
-                cursor.execute("""
-                               INSERT INTO regras_staff (dia_tipo, turno, quantidade)
-                               VALUES (?, ?, ?) ON CONFLICT(dia_tipo, turno) 
-                    DO
-                               UPDATE SET quantidade = excluded.quantidade
-                               """, (dia, turno, qtd))
+                # CORREÇÃO: Usando database.run_query para trocar ? por %s automaticamente
+                database.run_query(conn, """
+                    INSERT INTO regras_staff (dia_tipo, turno, quantidade)
+                    VALUES (?, ?, ?) 
+                    ON CONFLICT(dia_tipo, turno) 
+                    DO UPDATE SET quantidade = excluded.quantidade
+                """, (dia, turno, qtd))
         conn.commit()
-
-        # --- ALERTA VISUAL ---
+        
         st.toast("Regras de Staff salvas com sucesso!", icon="✅")
-        time.sleep(0.5)  # Pequena pausa para garantir que o toast apareça
+        time.sleep(0.5) 
         st.cache_data.clear()
         return True
     except Exception as e:
@@ -70,42 +66,46 @@ def save_staff_rules(regras):
     finally:
         conn.close()
 
-
 def save_shift_hours(horas):
     conn = database.get_db_connection()
     try:
-        cursor = conn.cursor()
         for turno, qtd in horas.items():
-            cursor.execute(
-                "INSERT INTO configuracao_turnos (turno, horas) VALUES (?, ?) ON CONFLICT(turno) DO UPDATE SET horas = excluded.horas",
-                (turno, qtd))
+            # CORREÇÃO: Usando database.run_query
+            database.run_query(conn, """
+                INSERT INTO configuracao_turnos (turno, horas) VALUES (?, ?) 
+                ON CONFLICT(turno) DO UPDATE SET horas = excluded.horas
+            """, (turno, qtd))
         conn.commit()
-
-        # --- ALERTA VISUAL ---
+        
         st.toast("Carga horária atualizada!", icon="⏰")
         time.sleep(0.5)
         st.cache_data.clear()
         return True
+    except Exception as e:
+        st.error(f"Erro ao salvar horas: {e}")
+        return False
     finally:
         conn.close()
-
 
 def save_limits(limite):
     conn = database.get_db_connection()
     try:
-        conn.execute(
-            "INSERT INTO configuracao_limites (chave, valor) VALUES ('max_horas_ciclo', ?) ON CONFLICT(chave) DO UPDATE SET valor = excluded.valor",
-            (limite,))
+        # CORREÇÃO: Usando database.run_query
+        database.run_query(conn, """
+            INSERT INTO configuracao_limites (chave, valor) VALUES ('max_horas_ciclo', ?) 
+            ON CONFLICT(chave) DO UPDATE SET valor = excluded.valor
+        """, (limite,))
         conn.commit()
-
-        # --- ALERTA VISUAL ---
+        
         st.toast(f"Limite de horas salvo: {limite}h", icon="🛡️")
         time.sleep(0.5)
         st.cache_data.clear()
         return True
+    except Exception as e:
+        st.error(f"Erro ao salvar limite: {e}")
+        return False
     finally:
         conn.close()
-
 
 def delete_all_data():
     conn = database.get_db_connection()
@@ -113,11 +113,14 @@ def delete_all_data():
         tables = ["indisponibilidades", "escala_salva", "ciclo_dias", "sobreaviso", "regras_staff",
                   "configuracao_turnos", "configuracao_limites", "analistas", "ciclos", "sqlite_sequence",
                   "feriados_anuais"]
-        for t in tables: conn.execute(f"DELETE FROM {t}")
+        for t in tables: 
+            try:
+                # CORREÇÃO: Usando database.run_query
+                database.run_query(conn, f"DELETE FROM {t}")
+            except: pass # Ignora erro se tabela nao existir
+            
         conn.commit()
-
-        # --- ALERTA VISUAL (Usa success aqui pois é uma ação drástica) ---
-        st.balloons()  # Solta balões pois é um reset total
+        st.balloons() 
         st.success("Banco de dados resetado com sucesso!")
         st.cache_data.clear()
         time.sleep(2)
@@ -126,16 +129,12 @@ def delete_all_data():
     finally:
         conn.close()
 
-
 # Auxiliares de tempo
 def decimal_to_time(val):
     if pd.isna(val): return dt_time(0, 0)
-    h = int(val);
-    m = int(round((val - h) * 60))
+    h = int(val); m = int(round((val - h) * 60))
     if m == 60: h += 1; m = 0
     return dt_time(h % 24, m)
-
-
 def time_to_decimal(t): return t.hour + t.minute / 60.0
 
 
@@ -183,16 +182,12 @@ h_atuais = utils.load_shift_hours_from_db()
 
 with st.form("form_horas"):
     c1, c2, c3 = st.columns(3)
-    with c1:
-        hm = st.time_input("Manhã", value=decimal_to_time(h_atuais.get("Manha", 5.5)), step=1800)
-    with c2:
-        hn = st.time_input("Noite", value=decimal_to_time(h_atuais.get("Noite", 5.0)), step=1800)
-    with c3:
-        hi = st.time_input("Integral", value=decimal_to_time(h_atuais.get("Integral", 10.0)), step=1800)
+    with c1: hm = st.time_input("Manhã", value=decimal_to_time(h_atuais.get("Manha", 5.5)), step=1800)
+    with c2: hn = st.time_input("Noite", value=decimal_to_time(h_atuais.get("Noite", 5.0)), step=1800)
+    with c3: hi = st.time_input("Integral", value=decimal_to_time(h_atuais.get("Integral", 10.0)), step=1800)
 
     if st.form_submit_button("Salvar Horas"):
-        if save_shift_hours(
-                {"Manha": time_to_decimal(hm), "Noite": time_to_decimal(hn), "Integral": time_to_decimal(hi)}):
+        if save_shift_hours({"Manha": time_to_decimal(hm), "Noite": time_to_decimal(hn), "Integral": time_to_decimal(hi)}):
             st.rerun()
 
 # ==============================================================================
@@ -236,15 +231,14 @@ with st.expander("🛠️ Gerar Feriados Automaticamente", expanded=False):
             count_new = 0
             for date, name in br_holidays.items():
                 try:
-                    conn.execute(
-                        "INSERT OR IGNORE INTO feriados_anuais (data_iso, nome_feriado, usar_na_escala) VALUES (?, ?, 1)",
+                    # CORREÇÃO: run_query
+                    database.run_query(conn, 
+                        "INSERT INTO feriados_anuais (data_iso, nome_feriado, usar_na_escala) VALUES (?, ?, TRUE) ON CONFLICT(data_iso) DO NOTHING",
                         (date.strftime('%Y-%m-%d'), name))
                     count_new += 1
-                except:
-                    pass
+                except: pass
             conn.commit()
             conn.close()
-            # Alerta
             st.toast(f"{count_new} novos feriados adicionados!", icon="📅")
             time.sleep(1)
             st.rerun()
@@ -259,9 +253,8 @@ try:
 
         st.write("---")
         ano_view = st.selectbox("Filtrar por Ano:", ["Todos"] + anos_dispo, index=len(anos_dispo))
-        df_view = df_feriados[
-            df_feriados['data_iso'].dt.year == ano_view].copy() if ano_view != "Todos" else df_feriados.copy()
-        df_view['usar_na_escala'] = df_view['usar_na_escala'].apply(lambda x: True if x == 1 else False)
+        df_view = df_feriados[df_feriados['data_iso'].dt.year == ano_view].copy() if ano_view != "Todos" else df_feriados.copy()
+        df_view['usar_na_escala'] = df_view['usar_na_escala'].apply(lambda x: True if x else False)
 
         df_editado = st.data_editor(
             df_view,
@@ -278,16 +271,22 @@ try:
 
         if st.button("💾 Salvar Alterações nos Feriados"):
             conn_save = database.get_db_connection()
-            for i, row in df_editado.iterrows():
-                conn_save.execute("UPDATE feriados_anuais SET nome_feriado = ?, usar_na_escala = ? WHERE id = ?",
-                                  (row['nome_feriado'], 1 if row['usar_na_escala'] else 0, row['id']))
-            conn_save.commit()
-            conn_save.close()
-            st.toast("Feriados atualizados com sucesso!", icon="✨")
-            time.sleep(1)
-            st.rerun()
+            try:
+                for i, row in df_editado.iterrows():
+                    # CORREÇÃO: run_query + bool()
+                    database.run_query(conn_save, 
+                        "UPDATE feriados_anuais SET nome_feriado = ?, usar_na_escala = ? WHERE id = ?",
+                        (row['nome_feriado'], bool(row['usar_na_escala']), row['id']))
+                conn_save.commit()
+                st.toast("Feriados atualizados com sucesso!", icon="✨")
+                time.sleep(1)
+                st.rerun()
+            finally:
+                conn_save.close()
     else:
         st.info("Nenhum feriado cadastrado.")
+except Exception as e:
+    st.error(f"Erro ao carregar feriados: {e}")
 finally:
     conn.close()
 
@@ -301,35 +300,29 @@ try:
     df_ciclos = pd.read_sql_query("SELECT id, nome_ciclo FROM ciclos ORDER BY data_inicio DESC", conn)
     if not df_ciclos.empty:
         ciclos_dict = dict(zip(df_ciclos['id'], df_ciclos['nome_ciclo']))
-        id_ciclo_edit = st.selectbox("Selecione o Ciclo:", options=ciclos_dict.keys(),
-                                     format_func=lambda x: ciclos_dict[x])
+        id_ciclo_edit = st.selectbox("Selecione o Ciclo:", options=ciclos_dict.keys(), format_func=lambda x: ciclos_dict[x])
 
-        df_dias = pd.read_sql_query(
-            f"SELECT id, nome_coluna, data_dia, ativo FROM ciclo_dias WHERE id_ciclo = {id_ciclo_edit} ORDER BY data_dia ASC",
-            conn)
+        df_dias = pd.read_sql_query(f"SELECT id, nome_coluna, data_dia, ativo FROM ciclo_dias WHERE id_ciclo = {id_ciclo_edit} ORDER BY data_dia ASC", conn)
         if not df_dias.empty:
-            df_dias['ativo'] = df_dias['ativo'].apply(lambda x: True if x == 1 else False)
-            df_editado_ciclo = st.data_editor(df_dias,
-                                              column_config={"ativo": st.column_config.CheckboxColumn("Ativo?"),
-                                                             "id": None, "nome_coluna": "Nome",
-                                                             "data_dia": st.column_config.DateColumn("Data",
-                                                                                                     disabled=True)},
-                                              hide_index=True, use_container_width=True)
+            df_dias['ativo'] = df_dias['ativo'].apply(lambda x: True if x else False)
+            df_editado_ciclo = st.data_editor(df_dias, column_config={"ativo": st.column_config.CheckboxColumn("Ativo?"), "id": None, "nome_coluna": "Nome", "data_dia": st.column_config.DateColumn("Data", disabled=True)}, hide_index=True, use_container_width=True)
 
             if st.button("💾 Atualizar Ciclo Atual"):
                 conn_save = database.get_db_connection()
-                for i, row in df_editado_ciclo.iterrows():
-                    conn_save.execute("UPDATE ciclo_dias SET nome_coluna = ?, ativo = ? WHERE id = ?",
-                                      (row['nome_coluna'], 1 if row['ativo'] else 0, row['id']))
-                conn_save.commit()
-                conn_save.close()
-                st.toast("Ciclo atualizado!", icon="✅")
-                time.sleep(1)
-                st.rerun()
-except:
-    pass
-finally:
-    conn.close()
+                try:
+                    for i, row in df_editado_ciclo.iterrows():
+                        # CORREÇÃO: run_query + bool()
+                        database.run_query(conn_save, 
+                            "UPDATE ciclo_dias SET nome_coluna = ?, ativo = ? WHERE id = ?", 
+                            (row['nome_coluna'], bool(row['ativo']), row['id']))
+                    conn_save.commit()
+                    st.toast("Ciclo atualizado!", icon="✅")
+                    time.sleep(1)
+                    st.rerun()
+                finally:
+                    conn_save.close()
+except: pass
+finally: conn.close()
 
 # ==============================================================================
 # 6. ZONA DE PERIGO
