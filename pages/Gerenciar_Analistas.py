@@ -1,16 +1,14 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-import database # Importante: usa o modulo database atualizado
+import database
 
 st.title("Gerenciar Analistas")
 
 def carregar_analistas():
-    # Garante que as tabelas existam
     database.init_all_db_tables()
     conn = database.get_db_connection()
     try:
-        # Pandas lê bem de ambos os bancos quando é SELECT simples
         query = "SELECT id, nome, email, nivel, data_admissao, ativo, skill_cplug, skill_dd FROM analistas ORDER BY nome"
         df = pd.read_sql_query(query, conn)
         return df
@@ -42,13 +40,14 @@ with st.expander("Cadastrar Manualmente"):
             else:
                 conn = database.get_db_connection()
                 try:
-                    # CORREÇÃO: Usar database.run_query para compatibilidade com Postgres
+                    # CORREÇÃO: Passar bool(var) em vez de 1/0
+                    # O Postgres exige True/False, não 1/0
                     database.run_query(conn, """
                         INSERT INTO analistas (nome, email, nivel, data_admissao, ativo, skill_cplug, skill_dd)
                         VALUES (?, ?, ?, ?, TRUE, ?, ?) 
                         ON CONFLICT(email) DO UPDATE SET nome=excluded.nome, nivel=excluded.nivel
                     """, (nome.strip(), email.strip().lower(), nivel, data_adm.strftime('%Y-%m-%d'),
-                          1 if s_cp else 0, 1 if s_dd else 0))
+                          bool(s_cp), bool(s_dd))) # <--- AQUI MUDOU DE '1 if ...' PARA 'bool(...)'
                     
                     conn.commit()
                     st.success(f"Analista {nome} salvo!")
@@ -59,10 +58,10 @@ with st.expander("Cadastrar Manualmente"):
                 finally:
                     conn.close()
 
-# --- 2. Importar CSV (Corrigido para Postgres) ---
+# --- 2. Importar CSV ---
 st.divider()
 st.header("Importar Analistas via CSV")
-st.info("Colunas esperadas: 'Analista' (ou Nome), 'Email', 'Nivel'.")
+st.info("Colunas esperadas: 'Analista', 'Email', 'Nivel'.")
 
 uploaded_file = st.file_uploader("Escolha o CSV", type=["csv", "xlsx"], key="csv_analistas")
 
@@ -81,7 +80,6 @@ if uploaded_file is not None:
                     uploaded_file.seek(0)
                     df = pd.read_csv(uploaded_file, sep=';')
             
-            # Normaliza nomes de colunas
             df.columns = df.columns.str.strip().str.lower()
             st.session_state.df_preview_analistas = df
         except Exception as e:
@@ -95,7 +93,6 @@ if uploaded_file is not None:
         if st.button("Confirmar Importação", type="primary"):
             df = st.session_state.df_preview_analistas
             
-            # Mapeamento inteligente de colunas
             rename_map = {}
             for c in df.columns:
                 if "analista" in c or "nome" in c: rename_map[c] = "nome"
@@ -104,18 +101,15 @@ if uploaded_file is not None:
             
             df = df.rename(columns=rename_map)
 
-            # Validação
-            colunas_obrigatorias = ["nome", "email"] # Nivel pode ser opcional (assumimos Junior se faltar)
+            colunas_obrigatorias = ["nome", "email"]
             faltantes = [c for c in colunas_obrigatorias if c not in df.columns]
 
             if faltantes:
-                st.error(f"Colunas obrigatórias não encontradas: {faltantes}. Verifique seu arquivo.")
+                st.error(f"Colunas obrigatórias não encontradas: {faltantes}")
             else:
                 conn = database.get_db_connection()
                 count = 0
                 erros_log = []
-                
-                # Barra de progresso para feedback
                 prog_bar = st.progress(0)
                 total = len(df)
                 
@@ -124,25 +118,23 @@ if uploaded_file is not None:
                     try:
                         nm = str(row['nome']).strip()
                         em = str(row['email']).strip().lower()
-                        # Se não tiver nivel, assume Junior
                         nv = str(row['nivel']).strip().capitalize() if 'nivel' in df.columns else "Junior"
                         
                         if not nm or not em or em == 'nan': continue
 
-                        # Skills (Procura colunas booleanas flexiveis)
-                        s_cp = 0
-                        s_dd = 0
+                        # Skills - CORREÇÃO PARA BOOLEAN
+                        s_cp = False # Inicia como False
+                        s_dd = False # Inicia como False
                         for c in df.columns:
                             val_str = str(row[c]).lower()
-                            if "cplug" in c and val_str in ['1', 'sim', 'true', 's']: s_cp = 1
-                            if "dd" in c and val_str in ['1', 'sim', 'true', 's']: s_dd = 1
+                            if "cplug" in c and val_str in ['1', 'sim', 'true', 's']: s_cp = True
+                            if "dd" in c and val_str in ['1', 'sim', 'true', 's']: s_dd = True
 
-                        # CORREÇÃO CRÍTICA: Usar run_query em vez de execute
                         database.run_query(conn, """
                             INSERT INTO analistas (nome, email, nivel, data_admissao, ativo, skill_cplug, skill_dd)
                             VALUES (?, ?, ?, ?, TRUE, ?, ?) 
                             ON CONFLICT(email) DO UPDATE SET nome=excluded.nome, nivel=excluded.nivel
-                        """, (nm, em, nv, datetime.now().strftime('%Y-%m-%d'), s_cp, s_dd))
+                        """, (nm, em, nv, datetime.now().strftime('%Y-%m-%d'), s_cp, s_dd)) # Passando True/False direto
                         
                         count += 1
                     except Exception as e:
@@ -153,16 +145,14 @@ if uploaded_file is not None:
                 
                 if count > 0:
                     st.toast(f"{count} analistas importados!", icon="✅")
-                    st.success(f"Importação concluída! {count} registros processados com sucesso.")
+                    st.success(f"Sucesso! {count} registros importados.")
                 else:
-                    st.warning("Nenhum registro foi importado. Verifique se a coluna de Email está preenchida.")
+                    st.warning("Nenhum registro importado.")
                 
                 if erros_log:
-                    with st.expander("Ver erros de importação"):
-                        st.write(erros_log)
+                    with st.expander("Ver erros"): st.write(erros_log)
                         
                 st.cache_data.clear()
-                # Pequeno delay para ler a msg antes de recarregar
                 import time
                 time.sleep(2)
                 st.rerun()
@@ -194,16 +184,16 @@ try:
             conn = database.get_db_connection()
             try:
                 for i, row in df_editada.iterrows():
-                    # CORREÇÃO: Usar run_query
+                    # CORREÇÃO: Usar bool() no UPDATE também
                     database.run_query(conn, """
                         UPDATE analistas
                         SET nome=?, email=?, nivel=?, ativo=?, skill_cplug=?, skill_dd=?
                         WHERE id = ?
                     """, (
                         row['nome'], row['email'], row['nivel'],
-                        1 if row['ativo'] else 0,
-                        1 if row['skill_cplug'] else 0,
-                        1 if row['skill_dd'] else 0,
+                        bool(row['ativo']),       # <--- bool()
+                        bool(row['skill_cplug']), # <--- bool()
+                        bool(row['skill_dd']),    # <--- bool()
                         row['id']
                     ))
                 conn.commit()
@@ -224,18 +214,13 @@ try:
                 if st.button(f"Excluir '{nome_del}'", type="secondary"):
                     conn = database.get_db_connection()
                     try:
-                        # Busca ID primeiro
-                        # Nota: Aqui usamos pd.read_sql normal pois é SELECT
                         id_res = pd.read_sql_query(f"SELECT id FROM analistas WHERE nome = '{nome_del}'", conn)
                         if not id_res.empty:
                             id_del = int(id_res.iloc[0]['id'])
-                            
-                            # Deleta dependencias usando run_query
                             database.run_query(conn, "DELETE FROM indisponibilidades WHERE id_analista = ?", (id_del,))
                             database.run_query(conn, "DELETE FROM escala_salva WHERE nome_analista = ?", (nome_del,))
                             database.run_query(conn, "DELETE FROM sobreaviso WHERE nome_analista = ?", (nome_del,))
                             database.run_query(conn, "DELETE FROM analistas WHERE id = ?", (id_del,))
-                            
                             conn.commit()
                             st.success("Analista excluído.")
                             st.cache_data.clear()
