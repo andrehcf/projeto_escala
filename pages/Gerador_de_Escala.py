@@ -66,13 +66,11 @@ else:
             f"SELECT nome_analista, nome_coluna_dia, turno FROM escala_salva WHERE id_ciclo = {id_ciclo_selecionado}",
             conn)
 
-        # --- CORREÇÃO DO ERRO SQL AQUI ---
-        # Mudamos "AND ativo = 1" para "AND ativo" (Postgres compatible)
+        # Filtra apenas dias ATIVOS (Sem usar = 1 para compatibilidade Postgres)
         df_dias_ciclo = pd.read_sql_query(
             f"SELECT nome_coluna, data_dia FROM ciclo_dias WHERE id_ciclo = {id_ciclo_selecionado} AND ativo ORDER BY data_dia ASC",
             conn)
-        # ---------------------------------
-
+        
         conn.close()
 
         dias_para_coluna_str = df_dias_ciclo['nome_coluna'].tolist()
@@ -233,30 +231,40 @@ else:
 
         with col1_save:
             if st.button("Salvar no Historico", type="primary"):
+                conn = database.get_db_connection()
                 try:
-                    conn = database.get_db_connection()
-                    cursor = conn.cursor()
+                    # 1. Limpa registros anteriores deste ciclo
+                    # Usamos run_query para compatibilidade e segurança
+                    database.run_query(conn, "DELETE FROM escala_salva WHERE id_ciclo = ?", (id_ciclo_selecionado,))
 
-                    # Limpa anterior
-                    cursor.execute(f"DELETE FROM escala_salva WHERE id_ciclo = {id_ciclo_selecionado}")
-
-                    # --- CORREÇÃO DO SALVAMENTO (Index Name) ---
+                    # 2. Prepara os dados (Melt)
                     df_final_para_salvar.index.name = 'nome_analista_temp'
                     df_para_salvar = df_final_para_salvar.reset_index().melt(
                         id_vars='nome_analista_temp',
                         var_name='nome_coluna_dia',
                         value_name='turno'
                     ).rename(columns={'nome_analista_temp': 'nome_analista'})
-                    # ------------------------------------------
 
                     df_para_salvar['id_ciclo'] = id_ciclo_selecionado
                     df_para_salvar['data_salvamento'] = datetime.now()
 
-                    # Insert multi para performance no Postgres
-                    df_para_salvar.to_sql('escala_salva', conn, if_exists='append', index=False, method='multi', chunksize=500)
+                    # 3. Inserção Manual (Substituindo to_sql para evitar erros de driver/Pandas)
+                    # Isso garante que funcione 100% no Postgres do Neon e no SQLite local
+                    
+                    # Seleciona apenas as colunas necessárias na ordem certa
+                    cols_db = ['id_ciclo', 'nome_analista', 'nome_coluna_dia', 'turno', 'data_salvamento']
+                    df_insert = df_para_salvar[cols_db]
+
+                    count_inserts = 0
+                    for _, row in df_insert.iterrows():
+                        database.run_query(conn, """
+                            INSERT INTO escala_salva (id_ciclo, nome_analista, nome_coluna_dia, turno, data_salvamento)
+                            VALUES (?, ?, ?, ?, ?)
+                        """, tuple(row))
+                        count_inserts += 1
                     
                     conn.commit()
-                    st.success("Escala salva com sucesso no historico!")
+                    st.success(f"Escala salva com sucesso! ({count_inserts} registros)")
 
                     del st.session_state.df_analistas_editada
                     del st.session_state.df_rodape_editada
