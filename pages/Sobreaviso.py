@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import database
 from datetime import datetime
+import time # Para alertas visuais
 
 st.set_page_config(page_title="Sobreaviso", page_icon="⚠️")
 
@@ -20,13 +21,12 @@ database.init_all_db_tables()
 with st.expander("📝 Cadastrar Manualmente", expanded=True):
     with st.form("form_sobreaviso", clear_on_submit=True):
         col1, col2 = st.columns(2)
-
+        
         with col1:
-            # Texto livre para garantir independência
-            nome_input = st.text_input("Nome do Responsável*",
-                                       placeholder="Ex: João Silva",
-                                       help="Digite o nome como deve aparecer na escala.")
-
+            nome_input = st.text_input("Nome do Responsável*", 
+                                     placeholder="Ex: João Silva", 
+                                     help="Digite o nome como deve aparecer na escala.")
+        
         with col2:
             c_in, c_fim = st.columns(2)
             with c_in:
@@ -44,12 +44,15 @@ with st.expander("📝 Cadastrar Manualmente", expanded=True):
             else:
                 conn = database.get_db_connection()
                 try:
-                    conn.execute("""
-                                 INSERT INTO sobreaviso (nome_analista, data_inicio, data_fim)
-                                 VALUES (?, ?, ?)
-                                 """, (nome_input.strip(), data_inicio, data_fim))
+                    # CORREÇÃO: Usar run_query
+                    database.run_query(conn, """
+                        INSERT INTO sobreaviso (nome_analista, data_inicio, data_fim) 
+                        VALUES (?, ?, ?)
+                    """, (nome_input.strip(), data_inicio, data_fim))
+                    
                     conn.commit()
-                    st.success(f"Sobreaviso de '{nome_input}' salvo!")
+                    st.toast(f"Sobreaviso de '{nome_input}' salvo!", icon="✅")
+                    time.sleep(1)
                     st.rerun()
                 except Exception as e:
                     st.error(f"Erro ao salvar: {e}")
@@ -68,34 +71,28 @@ uploaded_file = st.file_uploader("Arraste seu arquivo Excel ou CSV", type=["xlsx
 if uploaded_file is not None:
     try:
         df_import = None
-        # --- CORREÇÃO: Tratamento robusto de CSV ---
+        # --- Tratamento de CSV ---
         if uploaded_file.name.endswith('.csv'):
             try:
-                # Tenta ler padrão UTF-8 (Padrão Web/Linux)
                 df_import = pd.read_csv(uploaded_file)
             except UnicodeDecodeError:
-                # Se falhar, tenta Latin-1 (Padrão Excel/Brasil)
-                uploaded_file.seek(0)  # Reseta o ponteiro do arquivo
-                # sep=None e engine='python' detecta se é virgula ou ponto-e-virgula
+                uploaded_file.seek(0)
                 df_import = pd.read_csv(uploaded_file, encoding='latin1', sep=None, engine='python')
         else:
             df_import = pd.read_excel(uploaded_file)
-        # -------------------------------------------
-
+        
         if df_import is not None:
-            # Normaliza colunas para evitar erros de caixa alta/baixa
+            # Normaliza colunas
             df_import.columns = df_import.columns.str.strip().str.lower()
-
-            # Mapeia as colunas esperadas
+            
             col_nome = next((c for c in df_import.columns if 'nome' in c or 'analista' in c), None)
             col_inicio = next((c for c in df_import.columns if 'inicio' in c or 'start' in c), None)
             col_fim = next((c for c in df_import.columns if 'fim' in c or 'end' in c), None)
 
             if not col_nome or not col_inicio or not col_fim:
-                st.error(
-                    f"Não foi possível identificar as colunas. O arquivo deve ter: Nome, Inicio, Fim. (Encontrado: {list(df_import.columns)})")
+                st.error(f"Colunas obrigatórias não identificadas. Encontrado: {list(df_import.columns)}")
             else:
-                st.write("Prévia dos dados identificados:")
+                st.write("Prévia dos dados:")
                 st.dataframe(df_import[[col_nome, col_inicio, col_fim]].head())
 
                 if st.button("Confirmar Importação", type="primary"):
@@ -104,23 +101,24 @@ if uploaded_file is not None:
                     try:
                         for _, row in df_import.iterrows():
                             nome = str(row[col_nome]).strip()
-                            # Tenta converter datas
                             try:
+                                # Tenta converter datas flexíveis
                                 dt_ini = pd.to_datetime(row[col_inicio], dayfirst=True).date()
                                 dt_fim = pd.to_datetime(row[col_fim], dayfirst=True).date()
-
+                                
                                 if nome and str(nome).lower() != 'nan':
-                                    conn.execute("""
-                                                 INSERT INTO sobreaviso (nome_analista, data_inicio, data_fim)
-                                                 VALUES (?, ?, ?)
-                                                 """, (nome, dt_ini, dt_fim))
+                                    # CORREÇÃO: Usar run_query
+                                    database.run_query(conn, """
+                                        INSERT INTO sobreaviso (nome_analista, data_inicio, data_fim) 
+                                        VALUES (?, ?, ?)
+                                    """, (nome, dt_ini, dt_fim))
                                     count += 1
-                            except Exception as e_date:
-                                st.warning(f"Erro na linha de '{nome}': Data inválida ({e_date})")
+                            except:
                                 continue
 
                         conn.commit()
-                        st.success(f"{count} registros importados com sucesso!")
+                        st.toast(f"{count} registros importados!", icon="✅")
+                        time.sleep(1)
                         st.rerun()
                     except Exception as e:
                         st.error(f"Erro na importação: {e}")
@@ -138,18 +136,18 @@ st.subheader("📋 Registros Ativos")
 
 conn = database.get_db_connection()
 try:
+    # Leitura (SELECT) continua normal com pandas
     df_sobreaviso = pd.read_sql_query("""
-                                      SELECT id, nome_analista, data_inicio, data_fim
-                                      FROM sobreaviso
-                                      ORDER BY data_inicio DESC
-                                      """, conn)
-
+        SELECT id, nome_analista, data_inicio, data_fim 
+        FROM sobreaviso 
+        ORDER BY data_inicio DESC
+    """, conn)
+    
     if df_sobreaviso.empty:
         st.info("Nenhum registro encontrado.")
     else:
-        # Tabela Visual
         st.dataframe(
-            df_sobreaviso,
+            df_sobreaviso, 
             column_config={
                 "id": None,
                 "nome_analista": "Nome",
@@ -160,23 +158,27 @@ try:
             use_container_width=True
         )
 
-        # Botão de Excluir
         with st.expander("🗑️ Excluir Registro"):
             lista_opcoes = df_sobreaviso.apply(
-                lambda
-                    x: f"{x['id']} - {x['nome_analista']} ({pd.to_datetime(x['data_inicio']).strftime('%d/%m')} até {pd.to_datetime(x['data_fim']).strftime('%d/%m')})",
+                lambda x: f"{x['id']} - {x['nome_analista']} ({pd.to_datetime(x['data_inicio']).strftime('%d/%m')} até {pd.to_datetime(x['data_fim']).strftime('%d/%m')})", 
                 axis=1
             )
             selecionado = st.selectbox("Selecione para excluir:", options=lista_opcoes)
-
+            
             if st.button("Apagar Selecionado", type="secondary"):
                 id_del = selecionado.split(" - ")[0]
-                conn.execute("DELETE FROM sobreaviso WHERE id = ?", (id_del,))
-                conn.commit()
-                st.success("Registro apagado.")
-                st.rerun()
+                conn = database.get_db_connection() # Reabre conexão limpa
+                try:
+                    # CORREÇÃO: Usar run_query
+                    database.run_query(conn, "DELETE FROM sobreaviso WHERE id = ?", (id_del,))
+                    conn.commit()
+                    st.toast("Registro apagado.", icon="🗑️")
+                    time.sleep(1)
+                    st.rerun()
+                finally:
+                    conn.close()
 
 except Exception as e:
     st.error(f"Erro ao carregar dados: {e}")
 finally:
-    conn.close()
+    if conn: conn.close()
